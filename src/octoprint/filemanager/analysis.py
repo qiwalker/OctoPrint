@@ -258,6 +258,9 @@ class AbstractAnalysisQueue(object):
 
 			                                                       # TODO deprecated, remove in 1.4.0
 			                                                       "file": entry.path})
+
+			# noinspection PyUnusedLocal
+			result = None
 			try:
 				result = self._do_analysis(high_priority=high_priority)
 			except TypeError:

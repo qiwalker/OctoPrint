@@ -225,7 +225,7 @@ def init_logging(settings, use_logging_file=True, logging_file=None, default_con
 			"version": 1,
 			"formatters": {
 				"simple": {
-					"format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+					"format": "%(asctime)s - %(name)s - %(threadName)s - %(levelname)s - %(message)s"
 				},
 				"serial": {
 					"format": "%(asctime)s - %(message)s"

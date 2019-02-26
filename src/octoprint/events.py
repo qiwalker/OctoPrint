@@ -55,6 +55,7 @@ class Events(object):
 	METADATA_ANALYSIS_STARTED = "MetadataAnalysisStarted"
 	METADATA_ANALYSIS_FINISHED = "MetadataAnalysisFinished"
 	METADATA_STATISTICS_UPDATED = "MetadataStatisticsUpdated"
+	METADATA_UPDATED = "MetadataUpdated"
 
 	FILE_ADDED = "FileAdded"
 	FILE_REMOVED = "FileRemoved"

@@ -8,9 +8,11 @@ __copyright__ = "Copyright (C) 2014 The OctoPrint Project - Released under terms
 
 import logging
 import os
-import pylru
 import shutil
 import re
+
+# noinspection PyCompatibility
+import concurrent.futures
 
 try:
 	from os import scandir, walk
@@ -29,6 +31,7 @@ from slugify import Slugify
 import octoprint.filemanager
 
 from octoprint.util import is_hidden_path, to_unicode
+from octoprint.events import eventManager, Events
 
 class StorageInterface(object):
 	"""
@@ -476,6 +479,8 @@ class LocalFileStorage(StorageInterface):
 		"""
 		self._logger = logging.getLogger(__name__)
 
+		self._metadata_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
 		self.basefolder = os.path.realpath(os.path.abspath(to_unicode(basefolder)))
 		if not os.path.exists(self.basefolder) and create:
 			os.makedirs(self.basefolder)
@@ -485,8 +490,10 @@ class LocalFileStorage(StorageInterface):
 		import threading
 		self._metadata_lock_mutex = threading.RLock()
 		self._metadata_locks = dict()
+		self._persisted_metadata_lock_mutex = threading.RLock()
+		self._persisted_metadata_locks = dict()
 
-		self._metadata_cache = pylru.lrucache(10)
+		self._metadata_cache = dict()
 
 		self._old_metadata = None
 		self._initialize_metadata()
@@ -883,6 +890,8 @@ class LocalFileStorage(StorageInterface):
 		if not name in metadata:
 			return
 
+		metadata = deepcopy(metadata)
+
 		if not key in metadata[name] or overwrite:
 			metadata[name][key] = data
 			metadata_dirty = True
@@ -907,6 +916,7 @@ class LocalFileStorage(StorageInterface):
 		if not key in metadata[name]:
 			return
 
+		metadata = deepcopy(metadata)
 		del metadata[name][key]
 		self._save_metadata(path, metadata)
 
@@ -1050,7 +1060,7 @@ class LocalFileStorage(StorageInterface):
 	##~~ internals
 
 	def _add_history(self, name, path, data):
-		metadata = self._get_metadata(path)
+		metadata = deepcopy(self._get_metadata(path))
 
 		if not name in metadata:
 			metadata[name] = dict()
@@ -1071,6 +1081,8 @@ class LocalFileStorage(StorageInterface):
 		if not name in metadata or not "history" in metadata[name]:
 			return
 
+		metadata = deepcopy(metadata)
+
 		try:
 			metadata[name]["history"][index].update(data)
 			self._calculate_stats_from_history(name, path, metadata=metadata, save=False)
@@ -1084,6 +1096,8 @@ class LocalFileStorage(StorageInterface):
 		if not name in metadata or not "history" in metadata[name]:
 			return
 
+		metadata = deepcopy(metadata)
+
 		try:
 			del metadata[name]["history"][index]
 			self._calculate_stats_from_history(name, path, metadata=metadata, save=False)
@@ -1093,7 +1107,7 @@ class LocalFileStorage(StorageInterface):
 
 	def _calculate_stats_from_history(self, name, path, metadata=None, save=True):
 		if metadata is None:
-			metadata = self._get_metadata(path)
+			metadata = deepcopy(self._get_metadata(path))
 
 		if not name in metadata or not "history" in metadata[name]:
 			return
@@ -1164,7 +1178,7 @@ class LocalFileStorage(StorageInterface):
 		if file_type:
 			file_type = file_type[0]
 
-		metadata = self._get_metadata(path)
+		metadata = deepcopy(self._get_metadata(path))
 		metadata_dirty = False
 
 		if not name in metadata:
@@ -1241,7 +1255,7 @@ class LocalFileStorage(StorageInterface):
 			self._save_metadata(path, metadata)
 
 	def _remove_links(self, name, path, links):
-		metadata = self._get_metadata(path)
+		metadata = deepcopy(self._get_metadata(path))
 		metadata_dirty = False
 
 		if not name in metadata or not "hash" in metadata[name]:
@@ -1330,10 +1344,14 @@ class LocalFileStorage(StorageInterface):
 					if entry_name in metadata and isinstance(metadata[entry_name], dict):
 						entry_metadata = metadata[entry_name]
 						if not "display" in entry_metadata and entry_display != entry_name:
+							if not metadata_dirty:
+								metadata = deepcopy(metadata)
 							metadata[entry_name]["display"] = entry_display
 							entry_metadata["display"] = entry_display
 							metadata_dirty = True
 					else:
+						if not metadata_dirty:
+							metadata = deepcopy(metadata)
 						entry_metadata = self._add_basic_metadata(path, entry_name,
 						                                          display_name=entry_display,
 						                                          save=False,
@@ -1363,10 +1381,14 @@ class LocalFileStorage(StorageInterface):
 					if entry_name in metadata and isinstance(metadata[entry_name], dict):
 						entry_metadata = metadata[entry_name]
 						if not "display" in entry_metadata and entry_display != entry_name:
+							if not metadata_dirty:
+								metadata = deepcopy(metadata)
 							metadata[entry_name]["display"] = entry_display
 							entry_metadata["display"] = entry_display
 							metadata_dirty = True
 					elif entry_name != entry_display:
+						if not metadata_dirty:
+							metadata = deepcopy(metadata)
 						entry_metadata = self._add_basic_metadata(path, entry_name,
 						                                          display_name=entry_display,
 						                                          save=False,
@@ -1426,7 +1448,7 @@ class LocalFileStorage(StorageInterface):
 			additional_metadata = dict()
 
 		if metadata is None:
-			metadata = self._get_metadata(path)
+			metadata = deepcopy(self._get_metadata(path))
 
 		entry_path = os.path.join(path, entry)
 
@@ -1481,6 +1503,8 @@ class LocalFileStorage(StorageInterface):
 			if not name in metadata:
 				return
 
+			metadata = deepcopy(metadata)
+
 			if "hash" in metadata[name]:
 				hash = metadata[name]["hash"]
 				for m in metadata.values():
@@ -1494,7 +1518,7 @@ class LocalFileStorage(StorageInterface):
 
 	def _update_metadata_entry(self, path, name, data):
 		with self._get_metadata_lock(path):
-			metadata = self._get_metadata(path)
+			metadata = deepcopy(self._get_metadata(path))
 			metadata[name] = data
 			self._save_metadata(path, metadata)
 
@@ -1513,38 +1537,49 @@ class LocalFileStorage(StorageInterface):
 		with self._get_metadata_lock(destination_path):
 			self._update_metadata_entry(destination_path, destination_name, source_data)
 
-	def _get_metadata(self, path):
-		with self._get_metadata_lock(path):
-			if path in self._metadata_cache:
-				return deepcopy(self._metadata_cache[path])
+	def _get_metadata(self, path, force=False):
+		import json
 
-			self._migrate_metadata(path)
+		if not force:
+			metadata = self._metadata_cache.get(path)
+			if metadata:
+				return metadata
 
-			metadata_path = os.path.join(path, ".metadata.json")
+		self._migrate_metadata(path)
+
+		metadata_path = os.path.join(path, ".metadata.json")
+
+		metadata = None
+		with self._get_persisted_metadata_lock(path):
 			if os.path.exists(metadata_path):
 				with open(metadata_path) as f:
 					try:
-						import json
 						metadata = json.load(f)
 					except:
 						self._logger.exception("Error while reading .metadata.json from {path}".format(**locals()))
-					else:
-						if isinstance(metadata, dict):
-							self._metadata_cache[path] = deepcopy(metadata)
-							return metadata
+
+		if isinstance(metadata, dict):
+			self._metadata_cache[path] = metadata
+			return metadata
+		else:
 			return dict()
 
 	def _save_metadata(self, path, metadata):
 		with self._get_metadata_lock(path):
+			self._metadata_cache[path] = metadata
+		self._metadata_executor.submit(self._persist_metadata, path, metadata)
+
+	def _persist_metadata(self, path, metadata):
+		import json
+		serialized_data = json.dumps(metadata, indent=4, separators=(",", ": "))
+
+		with self._get_persisted_metadata_lock(path):
 			metadata_path = os.path.join(path, ".metadata.json")
 			try:
-				import json
 				with atomic_write(metadata_path) as f:
-					json.dump(metadata, f, indent=4, separators=(",", ": "))
+					f.write(serialized_data)
 			except:
 				self._logger.exception("Error while writing .metadata.json to {path}".format(**locals()))
-			else:
-				self._metadata_cache[path] = deepcopy(metadata)
 
 	def _delete_metadata(self, path):
 		with self._get_metadata_lock(path):
@@ -1564,7 +1599,7 @@ class LocalFileStorage(StorageInterface):
 		import yaml
 		import json
 
-		with self._get_metadata_lock(path):
+		with self._get_persisted_metadata_lock(path):
 			metadata_path_yaml = os.path.join(path, ".metadata.yaml")
 			metadata_path_json = os.path.join(path, ".metadata.json")
 
@@ -1574,7 +1609,10 @@ class LocalFileStorage(StorageInterface):
 
 			if os.path.exists(metadata_path_json):
 				# already migrated
-				# TODO 1.3.10 Remove ".metadata.yaml" files
+				try:
+					os.remove(metadata_path_yaml)
+				except:
+					self._logger.exception("Error while removing .metadata.yaml from {path}".format(**locals()))
 				return
 
 			with open(metadata_path_yaml) as f:
@@ -1589,9 +1627,18 @@ class LocalFileStorage(StorageInterface):
 				return
 
 			with atomic_write(metadata_path_json) as f:
-				json.dump(metadata, f, indent=4, separators=(",", ": "))
+				f.write(json.dumps(metadata, indent=4, separators=(",", ": ")))
 
-			# TODO 1.3.10 Remove ".metadata.yaml" files
+			try:
+				os.remove(metadata_path_yaml)
+			except:
+				self._logger.exception("Error while removing .metadata.yaml from {path}".format(**locals()))
+
+	# noinspection PyMethodMayBeStatic
+	def _notify_updated_metadata(self, *paths):
+		def f(_):
+			eventManager().fire(Events.METADATA_UPDATED, payload=dict(paths=paths))
+		return f
 
 	@contextmanager
 	def _get_metadata_lock(self, path):
@@ -1613,3 +1660,24 @@ class LocalFileStorage(StorageInterface):
 				del self._metadata_locks[path]
 			else:
 				self._metadata_locks[path] = (counter, lock)
+
+	@contextmanager
+	def _get_persisted_metadata_lock(self, path):
+		with self._persisted_metadata_lock_mutex:
+			if path not in self._persisted_metadata_locks:
+				import threading
+				self._persisted_metadata_locks[path] = (0, threading.RLock())
+
+			counter, lock = self._persisted_metadata_locks[path]
+			counter += 1
+			self._persisted_metadata_locks[path] = (counter, lock)
+
+		yield lock
+
+		with self._persisted_metadata_lock_mutex:
+			counter = self._persisted_metadata_locks[path][0]
+			counter -= 1
+			if counter <= 0:
+				del self._persisted_metadata_locks[path]
+			else:
+				self._persisted_metadata_locks[path] = (counter, lock)

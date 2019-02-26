@@ -701,7 +701,8 @@ class FileManager(object):
 		storage_manager.set_additional_metadata(path, "analysis", result, overwrite=True)
 
 	def _on_analysis_finished(self, entry, result):
-		self._add_analysis_result(entry.location, entry.path, result)
+		if result:
+			self._add_analysis_result(entry.location, entry.path, result)
 
 	def _analysis_queue_entry(self, destination, path, printer_profile=None, analysis=None):
 		if printer_profile is None:
