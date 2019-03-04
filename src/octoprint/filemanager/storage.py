@@ -1559,7 +1559,15 @@ class LocalFileStorage(StorageInterface):
 						self._logger.exception("Error while reading .metadata.json from {path}".format(**locals()))
 
 		if isinstance(metadata, dict):
-			self._metadata_cache[path] = metadata
+			old_size = len(metadata)
+			metadata = { k: v for k, v in metadata.items() if os.path.exists(os.path.join(path, k)) }
+			new_size = len(metadata)
+			if new_size != old_size:
+				self._logger.info("Deleted {} stale entries from metadata for path {}".format(old_size - new_size,
+				                                                                              path))
+				self._save_metadata(path, metadata)
+			else:
+				self._metadata_cache[path] = metadata
 			return metadata
 		else:
 			return dict()
